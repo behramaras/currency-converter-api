@@ -1,3 +1,5 @@
+🌐 **Live Demo:** [currency-converter-api-csh3.onrender.com](https://currency-converter-api-csh3.onrender.com)
+
 # 💱 Currency & Gold Converter
 
 A full-stack **FastAPI** application that provides real-time currency conversion between fiat currencies and gold (XAU), served with a built-in dark-themed web UI — no frontend framework required.
