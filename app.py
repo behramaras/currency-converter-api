@@ -30,7 +30,7 @@ SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "TRY", GOLD_CODE]
 
 # Canlı FX ve altın spot fiyatı çekmek için kaynaklar
 FX_URL = "https://doviz.dev/v1/try.json"
-GOLD_URL = "https://metalmetric.com/api/gpt?action=spot_prices&metal=all"
+GOLD_URL = "https://finans.truncgil.com/v4/today.json"
 
 # Basit in-memory cache (çok sık istek atmayı engeller)
 FX_CACHE_TTL_SECONDS = 300
@@ -167,58 +167,40 @@ async def get_gold_spot_usd_and_try() -> dict[str, Any]:
         out = {
             "usd_per_oz": None,
             "try_per_oz": None,
-            "unit": "USD/troy oz",
+            "try_per_gram": None,
+            "try_ceyrek": None,
+            "try_tam": None,
+            "unit": "TRY",
             "source_timestamp": None,
         }
         _gold_cache["data"] = out
         _gold_cache["fetched_at"] = now
         return out
 
-    # MetalMetric: {"prices": {"gold": {"price_per_oz": 4452.37, "unit": "USD/troy oz"}, ...}}
-    gold = (data.get("prices") or {}).get("gold") or {}
-    usd_per_oz_raw = gold.get("price_per_oz")
-    usd_per_oz = float(usd_per_oz_raw) if usd_per_oz_raw is not None else None
+    # truncgil API: gram-altin, ceyrek-altin, tam-altin direkt TRY
+    gram = data.get("gram-altin") or {}
+    ceyrek = data.get("ceyrek-altin") or {}
+    tam = data.get("tam-altin") or {}
 
-    # Altını TRY'ye çevirmek için USD/TRY kurunu aynı FX kaynağından al
+    try_per_gram = float(gram.get("Selling") or gram.get("Buying") or 0) or None
+    try_ceyrek = float(ceyrek.get("Selling") or ceyrek.get("Buying") or 0) or None
+    try_tam = float(tam.get("Selling") or tam.get("Buying") or 0) or None
+
+    # USD/oz hesabı (bilgi amaçlı)
     usd_try = await get_fx_rate("USD", "TRY")
-
-    gold_try_per_oz = (
-        usd_per_oz * usd_try
-        if (usd_per_oz is not None and usd_try is not None)
-        else None
-    )
-
-    # Troy ounce -> gram dönüşümü
-    # Not: MetalMetric "spot" fiyatı ince altın (24 ay) gibi düşünülür.
-    # Çeyrek/Tam ve converter tarafında "gram altın" için 22 ay saflığı uygulanır.
     troy_oz_in_grams = 31.1034768
-    purity_22k = 22 / 24  # 22 ay = 24 ayın 22/24'ü kadar saf altın
-
-    # Türkiye'de yaygın kullanılan sikke ağırlıkları (standart yaklaşık değerler)
-    # - Çeyrek altın: 1.75 g (22 ay)
-    # - Tam altın: 7.016 g (22 ay)
-    ceyrek_coin_grams = 1.75
-    tam_coin_grams = 7.016
-
-    gold_try_per_gram_fine = (
-        gold_try_per_oz / troy_oz_in_grams if gold_try_per_oz is not None else None
-    )
-    gold_try_per_gram = (
-        gold_try_per_gram_fine * purity_22k
-        if gold_try_per_gram_fine is not None
-        else None
-    )
-    gold_try_ceyrek = gold_try_per_gram * ceyrek_coin_grams if gold_try_per_gram is not None else None
-    gold_try_tam = gold_try_per_gram * tam_coin_grams if gold_try_per_gram is not None else None
+    purity_22k = 22 / 24
+    try_per_oz = (try_per_gram / purity_22k * troy_oz_in_grams) if try_per_gram else None
+    usd_per_oz = (try_per_oz / usd_try) if (try_per_oz and usd_try) else None
 
     out = {
         "usd_per_oz": usd_per_oz,
-        "try_per_oz": gold_try_per_oz,
-        "try_per_gram": gold_try_per_gram,
-        "try_ceyrek": gold_try_ceyrek,
-        "try_tam": gold_try_tam,
-        "unit": gold.get("unit", "USD/troy oz"),
-        "source_timestamp": data.get("timestamp"),
+        "try_per_oz": try_per_oz,
+        "try_per_gram": try_per_gram,
+        "try_ceyrek": try_ceyrek,
+        "try_tam": try_tam,
+        "unit": "TRY",
+        "source_timestamp": data.get("Update_Date"),
     }
 
     _gold_cache["data"] = out
