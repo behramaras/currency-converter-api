@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field, field_validator
 app = FastAPI(title="Döviz Dönüştürücü API", version="1.0.0")
 
 
-# Sabit (fallback) kur sözlüğü: (from, to) -> rate
-# Not: Gerçek zamanlı kurlar dış servisten çekilir; bu sözlük sadece hata durumunda kullanılır.
+# Static (fallback) exchange rate dictionary: (from, to) -> rate
+# Note: Real-time rates are fetched from external services; this dictionary is only used in case of failure.
 FALLBACK_RATES: dict[tuple[str, str], float] = {
     ("USD", "TRY"): 32.5,
     ("TRY", "USD"): 1 / 32.5,
@@ -23,16 +23,16 @@ FALLBACK_RATES: dict[tuple[str, str], float] = {
     ("TRY", "GBP"): 1 / 55.0,
 }
 
-# UI'da gösterilecek para birimleri (endpoint daha genişini de kabul edebilir)
-GOLD_CODE = "XAU"  # Converter tarafında altın = gram altın (22 ay)
+# Currencies displayed in the UI (endpoint can accept more)
+GOLD_CODE = "XAU"  # Gold in converter = gram gold (22k)
 SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "TRY", GOLD_CODE]
 
 
-# Canlı FX ve altın spot fiyatı çekmek için kaynaklar
+# Sources for fetching live FX and gold spot prices
 FX_URL = "https://doviz.dev/v1/try.json"
 GOLD_URL = "https://metalmetric.com/api/gpt?action=spot_prices&metal=all"
 
-# Basit in-memory cache (çok sık istek atmayı engeller)
+# Simple in-memory cache (prevents too frequent requests)
 FX_CACHE_TTL_SECONDS = 300
 GOLD_CACHE_TTL_SECONDS = 60
 
@@ -53,14 +53,14 @@ async def get_fx_data() -> dict[str, Any]:
         return _fx_cache["data"]
 
     data = await _fetch_json(FX_URL)
-    # doviz.dev şu şekildedir: {"USDTRY": 44.4, "TRYUSD": 0.022, ..., "_meta": {...}}
+    # doviz.dev format: {"USDTRY": 44.4, "TRYUSD": 0.022, ..., "_meta": {...}}
     _fx_cache["data"] = data
     _fx_cache["fetched_at"] = now
     return data
 
 
 def compute_rate_from_try_pivot(fx_data: dict[str, Any], from_currency: str, to_currency: str) -> float | None:
-    """1 from_currency -> to_currency oranını TRY pivotu ile hesaplar."""
+    """Calculates 1 from_currency -> to_currency rate using TRY as pivot."""
     from_currency = from_currency.upper()
     to_currency = to_currency.upper()
 
@@ -77,7 +77,7 @@ def compute_rate_from_try_pivot(fx_data: dict[str, Any], from_currency: str, to_
         v = fx_data.get(key)
         return float(v) if v is not None else None
 
-    # A -> TRY ve TRY -> B
+    # A -> TRY and TRY -> B
     key_a_try = f"{from_currency}TRY"
     key_try_b = f"TRY{to_currency}"
     a_try = fx_data.get(key_a_try)
@@ -88,7 +88,7 @@ def compute_rate_from_try_pivot(fx_data: dict[str, Any], from_currency: str, to_
 
 
 def compute_rate_fallback(from_currency: str, to_currency: str) -> float | None:
-    """Canlı çekim başarısızsa sadece demo amaçlı fallback oranlar."""
+    """Fallback rates for demo purposes if live fetching fails."""
     from_currency = from_currency.upper()
     to_currency = to_currency.upper()
 
@@ -115,7 +115,7 @@ async def get_fx_rate(from_currency: str, to_currency: str) -> float | None:
         if rate is not None:
             return rate
     except Exception:
-        # Canlı kur çekimi patlarsa fallback üzerinden ilerler.
+        # If live rate fetching fails, fallback is used
         pass
     return compute_rate_fallback(from_currency, to_currency)
 
@@ -124,7 +124,7 @@ async def get_conversion_rate(from_currency: str, to_currency: str) -> float | N
     """
     from/to:
       - fiat currency codes: USD/EUR/GBP/TRY
-      - GOLD_CODE (XAU): gram altın (22 ay)
+      - GOLD_CODE (XAU): gram gold (22k)
     """
     from_currency = from_currency.upper()
     to_currency = to_currency.upper()
@@ -138,7 +138,7 @@ async def get_conversion_rate(from_currency: str, to_currency: str) -> float | N
         if try_per_gram is None:
             return None
 
-        # TRY pivotu üzerinden çevir
+        # Convert via TRY pivot
         if from_currency == GOLD_CODE:
             r_from_try = float(try_per_gram)  # TRY per gram
         else:
@@ -174,12 +174,12 @@ async def get_gold_spot_usd_and_try() -> dict[str, Any]:
         _gold_cache["fetched_at"] = now
         return out
 
-    # MetalMetric: {"prices": {"gold": {"price_per_oz": 4452.37, "unit": "USD/troy oz"}, ...}}
+    # MetalMetric format
     gold = (data.get("prices") or {}).get("gold") or {}
     usd_per_oz_raw = gold.get("price_per_oz")
     usd_per_oz = float(usd_per_oz_raw) if usd_per_oz_raw is not None else None
 
-    # Altını TRY'ye çevirmek için USD/TRY kurunu aynı FX kaynağından al
+    # Convert gold to TRY using USD/TRY rate from FX source
     usd_try = await get_fx_rate("USD", "TRY")
 
     gold_try_per_oz = (
@@ -188,15 +188,15 @@ async def get_gold_spot_usd_and_try() -> dict[str, Any]:
         else None
     )
 
-    # Troy ounce -> gram dönüşümü
-    # Not: MetalMetric "spot" fiyatı ince altın (24 ay) gibi düşünülür.
-    # Çeyrek/Tam ve converter tarafında "gram altın" için 22 ay saflığı uygulanır.
+    # Troy ounce -> gram conversion
+    # Note: Spot price is considered 24k (fine gold)
+    # For coins and converter "gram gold", 22k purity is applied
     troy_oz_in_grams = 31.1034768
-    purity_22k = 22 / 24  # 22 ay = 24 ayın 22/24'ü kadar saf altın
+    purity_22k = 22 / 24
 
-    # Türkiye'de yaygın kullanılan sikke ağırlıkları (standart yaklaşık değerler)
-    # - Çeyrek altın: 1.75 g (22 ay)
-    # - Tam altın: 7.016 g (22 ay)
+    # Common Turkish gold coin weights (approximate)
+    # - Quarter gold: 1.75 g (22k)
+    # - Full gold: 7.016 g (22k)
     ceyrek_coin_grams = 1.75
     tam_coin_grams = 7.016
 
@@ -261,7 +261,7 @@ async def convert(q: ConvertQuery):
 
 @app.get("/prices")
 async def prices():
-    # FX (GBP/TRY dahil) ve altın fiyatını tek seferde döndür.
+    # Returns FX (including GBP/TRY) and gold prices in one response
     try:
         fx_data = await get_fx_data()
         meta = fx_data.get("_meta") or {}
